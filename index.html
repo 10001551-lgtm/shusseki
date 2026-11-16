@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="出欠QR">
+<title>パソコン部 出欠確認</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --ink: #1d2433; --quiet: #6b7280;
+    --ok: #16a34a; --warn: #d97706; --ng: #dc2626; --accent: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    background: var(--bg); color: var(--ink);
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px; background: var(--card); border-bottom: 1px solid #e5e7eb;
+  }
+  header h1 { font-size: 20px; margin: 0; }
+  header .status { font-size: 14px; color: var(--quiet); }
+  button {
+    font: inherit; font-size: 16px; padding: 10px 16px; border-radius: 10px;
+    border: 1px solid #d1d5db; background: var(--card); color: var(--ink);
+  }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  main {
+    display: grid; grid-template-columns: 1fr 360px; gap: 16px; padding: 16px 20px;
+  }
+  @media (orientation: portrait) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border-radius: 14px; padding: 16px; border: 1px solid #e5e7eb; }
+  #reader { width: 100%; border-radius: 10px; overflow: hidden; }
+  #start-area { text-align: center; padding: 40px 0; }
+  #start-area button { font-size: 22px; padding: 18px 32px; }
+  .hint { color: var(--quiet); font-size: 14px; margin-top: 8px; }
+  #today h2 { font-size: 18px; margin: 0 0 8px; display: flex; justify-content: space-between; }
+  #today ul { list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow-y: auto; }
+  #today li {
+    display: flex; justify-content: space-between; padding: 8px 4px;
+    border-bottom: 1px solid #f0f0f0; font-size: 16px;
+  }
+  #today li .time { color: var(--quiet); font-size: 14px; }
+  #today li .pending { color: var(--warn); font-size: 12px; margin-left: 6px; }
+  .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  select, input[type=text], input[type=url], input[type=password] {
+    font: inherit; font-size: 16px; padding: 10px; border-radius: 10px;
+    border: 1px solid #d1d5db; width: 100%;
+  }
+  /* 読み取り結果を大きく出す */
+  #result {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    flex-direction: column; color: #fff; text-align: center; z-index: 10;
+  }
+  #result.show { display: flex; }
+  #result.ok { background: rgba(22, 163, 74, .93); }
+  #result.again { background: rgba(217, 119, 6, .93); }
+  #result.ng { background: rgba(220, 38, 38, .93); }
+  #result .big { font-size: 56px; font-weight: 700; }
+  #result .small { font-size: 26px; margin-top: 12px; }
+  dialog { border: none; border-radius: 14px; padding: 20px; width: min(560px, 92vw); }
+  dialog label { display: block; margin: 14px 0 4px; font-weight: 600; }
+  dialog .hint { margin-top: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>パソコン部 出欠確認</h1>
+  <div>
+    <span class="status" id="sync-status"></span>
+    <button id="open-settings">設定</button>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <div id="start-area">
+      <button class="primary" id="start">読み取りを始める</button>
+      <p class="hint">名刺のQRコードをカメラにかざしてください</p>
+    </div>
+    <div id="reader"></div>
+  </section>
+
+  <section class="card" id="today">
+    <h2><span>今日の出席</span><span id="count">0人</span></h2>
+    <ul id="list"></ul>
+    <div class="row">
+      <select id="manual-select"><option value="">名刺を忘れた人を選ぶ…</option></select>
+      <button id="manual-add">出席にする</button>
+    </div>
+    <div class="row">
+      <button id="download">今日の記録をCSVで保存</button>
+    </div>
+  </section>
+</main>
+
+<div id="result"><div class="big" id="result-big"></div><div class="small" id="result-small"></div></div>
+
+<dialog id="settings">
+  <h2 style="margin-top:0">設定</h2>
+  <label for="gas-url">スプレッドシート連携のURL（GASのWebアプリURL）</label>
+  <input type="url" id="gas-url" placeholder="https://script.google.com/macros/s/.../exec">
+  <p class="hint">空のままでも使えます。その場合、記録はこのiPadの中だけに残ります。</p>
+  <label for="secret">合言葉</label>
+  <input type="text" id="secret" placeholder="GAS側と同じ合言葉" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <label for="device">このiPadの名前</label>
+  <input type="text" id="device" placeholder="例: 部室iPad1">
+  <div class="row">
+    <button id="load-roster">名簿を読み込む</button>
+    <button id="sync-now">未送信を送る</button>
+  </div>
+  <p class="hint" id="roster-info"></p>
+  <div class="row" style="justify-content:space-between">
+    <button id="reset-today">この端末の今日の記録を消す</button>
+    <button class="primary" id="close-settings">保存して閉じる</button>
+  </div>
+</dialog>
+
+<script src="html5-qrcode.min.js"></script>
+<script>
+'use strict';
+
+// ---------- 保存まわり（iPadの中に残すデータ） ----------
+const store = {
+  get(key, fallback) {
+    try { return JSON.parse(localStorage.getItem('qrAttend.' + key)) ?? fallback; }
+    catch { return fallback; }
+  },
+  set(key, value) { localStorage.setItem('qrAttend.' + key, JSON.stringify(value)); },
+};
+
+const settings = store.get('settings', { gasUrl: '', secret: '', device: '' });
+let roster = store.get('roster', []);   // [{id, name, grade}]
+let queue = store.get('queue', []);     // まだスプレッドシートに送れていない記録
+
+function todayStr(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function timeStr(iso) {
+  const d = new Date(iso);
+  return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+}
+
+// 今日の記録。日付が変わったら自動で空にする
+let today = store.get('today', { date: todayStr(), entries: [] });
+if (today.date !== todayStr()) today = { date: todayStr(), entries: [] };
+
+// ---------- QRの中身から部員IDを取り出す ----------
+// 名刺のQRの形式が決まったら、ここを合わせて直す
+function extractId(text) {
+  let t = text.trim();
+  if (/^https?:\/\//i.test(t)) {
+    try {
+      const u = new URL(t);
+      t = u.searchParams.get('id') || u.searchParams.get('ID') || t;
+    } catch { /* URLでなければそのまま */ }
+  }
+  t = t.replace(/^PCCLUB:/i, '');
+  if (t.includes(',')) t = t.split(',')[0];
+  return t.trim();
+}
+
+function findMember(id) {
+  return roster.find(m => String(m.id) === String(id));
+}
+
+// ---------- 出席の記録 ----------
+function record(id, how) {
+  if (today.date !== todayStr()) today = { date: todayStr(), entries: [] }; // 開きっぱなしで日付が変わったとき
+  const member = findMember(id);
+  if (roster.length && !member) {
+    showResult('ng', '名簿にないQRです', id);
+    return;
+  }
+  const name = member ? member.name : id;
+  if (today.entries.some(e => e.id === id)) {
+    showResult('again', `${name}さん`, 'もう出席済みです');
+    return;
+  }
+  const entry = { id, name, ts: new Date().toISOString(), how, synced: false };
+  today.entries.push(entry);
+  queue.push({ id, date: today.date, ts: entry.ts, device: settings.device || '', how });
+  store.set('today', today);
+  store.set('queue', queue);
+  showResult('ok', `${name}さん`, '出席しました');
+  render();
+  sync();
+}
+
+// ---------- 画面表示 ----------
+let resultTimer;
+function showResult(kind, big, small) {
+  const el = document.getElementById('result');
+  el.className = 'show ' + kind;
+  document.getElementById('result-big').textContent = big;
+  document.getElementById('result-small').textContent = small;
+  beep(kind);
+  clearTimeout(resultTimer);
+  resultTimer = setTimeout(() => { el.className = ''; }, 1500);
+}
+
+let audioCtx;
+function beep(kind) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = kind === 'ok' ? 880 : 300;
+    gain.gain.value = 0.15;
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + (kind === 'ok' ? 0.15 : 0.4));
+  } catch { /* 音が出せなくても続ける */ }
+}
+
+function render() {
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+  [...today.entries].reverse().forEach(e => {
+    const li = document.createElement('li');
+    const name = document.createElement('span');
+    name.textContent = e.name;
+    if (!e.synced && settings.gasUrl) {
+      const p = document.createElement('span');
+      p.className = 'pending';
+      p.textContent = '未送信';
+      name.appendChild(p);
+    }
+    const time = document.createElement('span');
+    time.className = 'time';
+    time.textContent = timeStr(e.ts) + (e.how === 'manual' ? '（手入力）' : '');
+    li.append(name, time);
+    list.appendChild(li);
+  });
+  document.getElementById('count').textContent = `${today.entries.length}人`;
+
+  const sel = document.getElementById('manual-select');
+  sel.length = 1;
+  roster.filter(m => !today.entries.some(e => e.id === String(m.id))).forEach(m => {
+    const o = document.createElement('option');
+    o.value = m.id;
+    o.textContent = `${m.name}${m.grade ? '（' + m.grade + '）' : ''}`;
+    sel.appendChild(o);
+  });
+
+  const st = document.getElementById('sync-status');
+  if (!settings.gasUrl) st.textContent = 'この端末にだけ保存中';
+  else if (queue.length) st.textContent = `未送信 ${queue.length}件`;
+  else st.textContent = 'スプレッドシートと同期済み';
+}
+
+// ---------- スプレッドシート（GAS）との通信 ----------
+let syncing = false;
+async function sync() {
+  if (!settings.gasUrl || !queue.length || syncing) return;
+  syncing = true;
+  const sending = queue.slice();
+  try {
+    // text/plain で送ると、GAS側で余計な事前確認（CORS）が起きない
+    const res = await fetch(settings.gasUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ secret: settings.secret, records: sending }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '送信エラー');
+    queue = queue.slice(sending.length);
+    store.set('queue', queue);
+    today.entries.forEach(e => {
+      if (sending.some(s => s.id === e.id && s.ts === e.ts)) e.synced = true;
+    });
+    store.set('today', today);
+  } catch (err) {
+    console.warn('送信できませんでした。あとで再送します。', err);
+  } finally {
+    syncing = false;
+    render();
+  }
+}
+setInterval(sync, 30000);
+window.addEventListener('online', sync);
+
+async function loadRoster() {
+  const info = document.getElementById('roster-info');
+  if (!settings.gasUrl) { info.textContent = '先にURLを入れてください'; return; }
+  info.textContent = '読み込み中…';
+  try {
+    const url = `${settings.gasUrl}?action=roster&secret=${encodeURIComponent(settings.secret)}`;
+    const data = await (await fetch(url)).json();
+    if (!data.ok) throw new Error(data.error);
+    roster = data.roster.map(m => ({ ...m, id: String(m.id) }));
+    store.set('roster', roster);
+    info.textContent = `名簿 ${roster.length}人を読み込みました`;
+    render();
+  } catch (err) {
+    info.textContent = '読み込めませんでした: ' + err.message;
+  }
+}
+
+// ---------- カメラでの読み取り ----------
+let lastText = '', lastTime = 0;
+function onScan(text) {
+  const now = Date.now();
+  // 同じQRを写したままにしたときの連続反応を防ぐ
+  if (text === lastText && now - lastTime < 3000) return;
+  lastText = text; lastTime = now;
+  const id = extractId(text);
+  if (id) record(id, 'qr');
+}
+
+document.getElementById('start').addEventListener('click', async () => {
+  beep('ok'); // iPadではタップ時に一度音を鳴らしておかないと、後で鳴らない
+  const scanner = new Html5Qrcode('reader');
+  try {
+    await scanner.start(
+      { facingMode: 'user' }, // 受付に置いたiPadの画面側カメラ。外側を使うなら 'environment'
+      { fps: 10, qrbox: (w, h) => { const n = Math.floor(Math.min(w, h) * 0.8); return { width: n, height: n }; } },
+      onScan,
+      () => {}
+    );
+    document.getElementById('start-area').style.display = 'none';
+  } catch (err) {
+    alert('カメラを起動できませんでした。Safariの設定でカメラを許可してください。\n' + err);
+  }
+});
+
+// ---------- ボタン類 ----------
+document.getElementById('manual-add').addEventListener('click', () => {
+  const id = document.getElementById('manual-select').value;
+  if (id) record(id, 'manual');
+});
+
+document.getElementById('download').addEventListener('click', () => {
+  const rows = [['日付', '時刻', 'ID', '名前', '方法']].concat(
+    today.entries.map(e => [today.date, timeStr(e.ts), e.id, e.name, e.how === 'manual' ? '手入力' : 'QR'])
+  );
+  const csv = '﻿' + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = `出欠_${today.date}.csv`;
+  a.click();
+});
+
+const dlg = document.getElementById('settings');
+document.getElementById('open-settings').addEventListener('click', () => {
+  document.getElementById('gas-url').value = settings.gasUrl;
+  document.getElementById('secret').value = settings.secret;
+  document.getElementById('device').value = settings.device;
+  document.getElementById('roster-info').textContent = roster.length ? `名簿 ${roster.length}人` : '名簿は未読み込み';
+  dlg.showModal();
+});
+function saveSettings() {
+  settings.gasUrl = document.getElementById('gas-url').value.trim();
+  settings.secret = document.getElementById('secret').value.normalize('NFKC').trim(); // 全角・前後の空白の違いで弾かれないように
+  settings.device = document.getElementById('device').value.trim();
+  store.set('settings', settings);
+}
+document.getElementById('close-settings').addEventListener('click', () => { saveSettings(); dlg.close(); render(); sync(); });
+document.getElementById('load-roster').addEventListener('click', () => { saveSettings(); loadRoster(); });
+document.getElementById('sync-now').addEventListener('click', () => { saveSettings(); sync(); });
+document.getElementById('reset-today').addEventListener('click', () => {
+  if (!confirm('この端末の今日の記録を消します。スプレッドシートの記録は消えません。')) return;
+  today = { date: todayStr(), entries: [] };
+  store.set('today', today);
+  render();
+});
+
+render();
+sync();
+</script>
+</body>
+</html>
